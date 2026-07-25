@@ -33,6 +33,7 @@
       ],
       "icon": "assets/icon.png",
       "signAndEditExecutable": false
-    }
+    },
+    "afterPack": "scripts/after-pack.js"
   }
 }
