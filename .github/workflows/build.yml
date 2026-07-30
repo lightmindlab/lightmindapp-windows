@@ -40,19 +40,35 @@ jobs:
       - name: Install Wine64
         # rcedit-x64.exe 是 64 位 Windows 程序，仅需 64 位 wine。
         # 注意 Ubuntu 24.04 (noble) 的 wine64 包不把 wine64 放入 PATH，
-        # 二进制实际位于 /usr/lib/wine/wine64（after-pack.js 已按此路径探测）。
+        # 二进制实际位于 /usr/lib/wine/wine64。但 electron-builder 的
+        # app-builder-bin 依赖 PATH 上的 `wine` 命令，故建立符号链接。
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends wine64
+          sudo apt-get install -y --no-install-recommends wine64 p7zip-full
           /usr/lib/wine/wine64 --version
+          sudo ln -sf /usr/lib/wine/wine64 /usr/local/bin/wine
+          sudo ln -sf /usr/lib/wine/wine64 /usr/local/bin/wine64
+          wine --version
 
       - name: Initialize Wine prefix
         # 预先初始化 wineprefix 并禁用 mono/gecko 下载提示，
         # 避免首次运行 rcedit 时卡在 GUI 弹窗。
         run: |
           WINEPREFIX="$HOME/.wine64" WINEDLLOVERRIDES="mscoree,mshtml=" \
-            /usr/lib/wine/wine64 wineboot --init
+            wine wineboot --init
           echo "Wine prefix ready at $HOME/.wine64"
+
+      - name: Provision winCodeSign (rcedit)
+        # package.json 中 signAndEditExecutable=false，electron-builder 不会自动下载
+        # winCodeSign；但自定义 afterPack 钩子需要其中的 rcedit-x64.exe 来注入图标与
+        # 版本信息，故手动下载并解压到 electron-builder 缓存目录。
+        run: |
+          CACHE="$HOME/.cache/electron-builder/winCodeSign"
+          mkdir -p "$CACHE"
+          curl -fL -o /tmp/wcs.7z \
+            "https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z"
+          7z x -y -o"$CACHE" /tmp/wcs.7z >/dev/null
+          ls -la "$CACHE/winCodeSign-2.6.0/rcedit-x64.exe"
 
       - name: Install dependencies
         run: npm ci
