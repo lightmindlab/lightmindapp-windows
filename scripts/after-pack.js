@@ -14,6 +14,9 @@ module.exports = async function (context) {
 
   const exePath = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.exe`)
   const icoPath = path.join(context.packager.info.projectDir, 'assets', 'icon.ico')
+  // 版本号从 package.json 动态读取，保持与构建版本一致
+  const version = context.packager.appInfo.version
+  const fileVersion = version.split('.').length === 3 ? version + '.0' : version
 
   if (!fs.existsSync(exePath)) {
     console.log(`[afterPack] 跳过：未找到 ${exePath}`)
@@ -39,10 +42,10 @@ module.exports = async function (context) {
     '--set-version-string', 'LegalCopyright', 'Copyright (c) 2026 lightmindlab',
     '--set-version-string', 'OriginalFilename', 'LightMind.exe',
     '--set-version-string', 'InternalName', 'LightMind',
-    '--set-version-string', 'FileVersion', '1.0.0',
-    '--set-version-string', 'ProductVersion', '1.0.0',
-    '--set-file-version', '1.0.0.0',
-    '--set-product-version', '1.0.0.0',
+    '--set-version-string', 'FileVersion', version,
+    '--set-version-string', 'ProductVersion', version,
+    '--set-file-version', fileVersion,
+    '--set-product-version', fileVersion,
     '--set-icon', toWinePath(icoPath)
   ]
 
