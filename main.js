@@ -7,6 +7,8 @@ const HOME_URL = 'https://www.lightmind.top'
 // 全局引用，避免托盘被回收
 let tray = null
 let mainWindow = null
+// 加载启动屏（页面未加载完成时显示破壳小鸡动画）
+let splash = null
 // 标记是否真正退出，用于区分“关闭即隐藏”与“托盘退出”
 let isQuiting = false
 
@@ -47,8 +49,9 @@ function createWindow() {
     title: 'LightMind',
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
+    center: true, // 与 splash 居中一致，切换时无位移
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    show: false, // 启动时先不显示，等加载后再显示，避免白屏
+    show: false, // 启动时先不显示，等页面加载完成后再显示，期间显示加载屏
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -60,10 +63,27 @@ function createWindow() {
 
   mainWindow = win
 
-  // 启动时显示窗口
-  win.once('ready-to-show', () => {
-    win.show()
+  // 页面加载完成：显示主窗口并关闭加载屏
+  // did-finish-load 在每次导航完成（含 reload）时触发
+  win.webContents.on('did-finish-load', () => {
+    if (!win.isDestroyed()) win.show()
+    closeSplash()
   })
+
+  // 页面加载失败时也显示主窗口（避免一直停留在加载屏）
+  win.webContents.on('did-fail-load', () => {
+    if (!win.isDestroyed() && !win.isVisible()) win.show()
+    closeSplash()
+  })
+
+  // 兜底：若长时间未完成加载，也显示主窗口，避免永久停留在加载屏
+  const loadTimer = setTimeout(() => {
+    if (!win.isDestroyed() && !win.isVisible()) {
+      win.show()
+      closeSplash()
+    }
+  }, 30000)
+  win.once('closed', () => clearTimeout(loadTimer))
 
   // 在应用内打开外部链接（非同源链接交给系统浏览器）
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -117,6 +137,43 @@ function createWindow() {
   win.loadURL(HOME_URL)
 }
 
+// 显示加载启动屏：在页面加载期间于窗口中央显示破壳小鸡动画
+function showSplash() {
+  if (splash && !splash.isDestroyed()) {
+    splash.show()
+    splash.focus()
+    return
+  }
+  splash = new BrowserWindow({
+    width: 1280,
+    height: 820,
+    center: true,
+    frame: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    show: true,
+    alwaysOnTop: true,
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  })
+  splash.loadFile(path.join(__dirname, 'assets', 'loading.html'))
+  splash.on('closed', () => { splash = null })
+}
+
+function closeSplash() {
+  if (splash && !splash.isDestroyed()) {
+    splash.close()
+    splash = null
+  }
+}
+
 function createTray() {
   const icon = getTrayIcon()
   tray = new Tray(icon)
@@ -131,6 +188,7 @@ function createTray() {
       label: '重新加载页面',
       click: () => {
         if (mainWindow) {
+          showSplash()
           mainWindow.reload()
         }
       }
@@ -170,6 +228,8 @@ function showMainWindow() {
 
 app.whenReady().then(() => {
   // 清理旧缓存可选；这里不主动清理
+  // 先显示加载屏，再创建（隐藏的）主窗口加载页面，加载完成后切换
+  showSplash()
   createWindow()
   createTray()
 
@@ -192,9 +252,10 @@ app.on('window-all-closed', () => {
   }
 })
 
-// 应用真正退出前清理托盘
+// 应用真正退出前清理托盘与加载屏
 app.on('before-quit', () => {
   isQuiting = true
+  closeSplash()
   if (tray) {
     tray.destroy()
     tray = null
