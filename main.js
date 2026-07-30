@@ -1,8 +1,12 @@
-const { app, BrowserWindow, shell, Tray, Menu, nativeImage } = require('electron')
+const { app, BrowserWindow, shell, Tray, Menu, nativeImage, session } = require('electron')
 const path = require('path')
 
 // 目标网址
 const HOME_URL = 'https://www.lightmind.top'
+
+// 桌面端标识：追加到 User-Agent 末尾，供网页识别后隐藏「下载 APP」按钮等元素
+// 网页端判断方式：/LightMindApp\//.test(navigator.userAgent)
+const APP_UA_TOKEN = 'LightMindApp'
 
 // 全局引用，避免托盘被回收
 let tray = null
@@ -227,6 +231,13 @@ function showMainWindow() {
 }
 
 app.whenReady().then(() => {
+  // 在默认 session 的 User-Agent 末尾追加桌面端标识，
+  // 使该 session 下所有请求（首屏 HTML / 子资源 / XHR / fetch / iframe）均携带，
+  // 网页端可通过 navigator.userAgent 或服务端 UA 头识别。
+  // 必须在创建窗口前设置，确保首个 loadURL 请求即带上标识。
+  const baseUA = session.defaultSession.getUserAgent()
+  session.defaultSession.setUserAgent(`${baseUA} ${APP_UA_TOKEN}/${app.getVersion()}`)
+
   // 清理旧缓存可选；这里不主动清理
   // 先显示加载屏，再创建（隐藏的）主窗口加载页面，加载完成后切换
   showSplash()
