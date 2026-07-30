@@ -1,13 +1,19 @@
 // electron-builder afterPack 钩子
 // 在 win-unpacked 生成后、portable installer 打包前，
-// 用 rcedit-x64.exe（64 位）注入自定义图标和版本信息
-// 绕过 electron-builder 默认 rcedit-ia32.exe（沙箱内核不支持 32 位 ELF）
+// 用 rcedit-x64.exe（64 位）注入自定义图标和版本信息。
+//
+// 跨平台执行：
+// - Windows（如 GitHub Actions windows-latest）：直接运行 rcedit-x64.exe
+// - Linux（本地沙箱）：通过 wine64 运行 rcedit-x64.exe（沙箱内核不支持 32 位 ELF，
+//   故绕过 electron-builder 默认 rcedit-ia32.exe）
 const { execFileSync } = require('child_process')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
 
-// 自动探测 wine 可执行文件路径（兼容本地沙箱 /root 与 GitHub Actions /home/runner）
+const isWin = process.platform === 'win32'
+
+// 自动探测 wine 可执行文件路径（仅 Linux 沙箱使用）
 function findWine() {
   const candidates = ['/usr/lib/wine/wine64', '/usr/bin/wine64', '/usr/bin/wine']
   for (const c of candidates) {
@@ -30,8 +36,13 @@ function findRcedit() {
   return '/root/.cache/electron-builder/winCodeSign/winCodeSign-2.6.0/rcedit-x64.exe'
 }
 
-const WINE = findWine()
-const RCEDIT = findRcedit()
+// 解析 rcedit-x64.exe 路径：优先使用环境变量 RCEDIT_PATH（CI 注入），否则探测缓存
+function resolveRcedit() {
+  if (process.env.RCEDIT_PATH && fs.existsSync(process.env.RCEDIT_PATH)) {
+    return process.env.RCEDIT_PATH
+  }
+  return findRcedit()
+}
 
 module.exports = async function (context) {
   if (context.electronPlatformName !== 'win32') return
@@ -50,16 +61,18 @@ module.exports = async function (context) {
     console.log(`[afterPack] 跳过：未找到 ${icoPath}`)
     return
   }
+
+  const RCEDIT = resolveRcedit()
   if (!fs.existsSync(RCEDIT)) {
     console.log(`[afterPack] 跳过：未找到 rcedit-x64.exe`)
     return
   }
 
-  // 转换为 wine 路径格式（Z:\ 开头）
-  const toWinePath = p => 'Z:' + p.replace(/\//g, '\\')
+  // Windows 原生运行时直接使用本机路径；Linux 经 wine 运行时需转换为 Z:\ 路径
+  const toExeArg = p => isWin ? p : 'Z:' + p.replace(/\//g, '\\')
 
-  const args = [
-    toWinePath(exePath),
+  const rceditArgs = [
+    toExeArg(exePath),
     '--set-version-string', 'FileDescription', 'LightMind',
     '--set-version-string', 'ProductName', 'LightMind',
     '--set-version-string', 'CompanyName', 'lightmindlab',
@@ -70,15 +83,21 @@ module.exports = async function (context) {
     '--set-version-string', 'ProductVersion', version,
     '--set-file-version', fileVersion,
     '--set-product-version', fileVersion,
-    '--set-icon', toWinePath(icoPath)
+    '--set-icon', toExeArg(icoPath)
   ]
 
-  // WINEPREFIX 默认放在用户家目录下，兼容本地沙箱 /root 与 CI /home/runner
-  const winePrefix = process.env.WINEPREFIX || path.join(os.homedir(), '.wine64')
   console.log('[afterPack] 注入图标和版本信息到', exePath)
-  execFileSync(WINE, [RCEDIT, ...args], {
-    stdio: 'inherit',
-    env: { ...process.env, WINEPREFIX: winePrefix, WINEDEBUG: '-all' }
-  })
+  if (isWin) {
+    // Windows 原生运行 rcedit-x64.exe，无需 wine
+    execFileSync(RCEDIT, rceditArgs, { stdio: 'inherit' })
+  } else {
+    const WINE = findWine()
+    // WINEPREFIX 默认放在用户家目录下，兼容本地沙箱 /root
+    const winePrefix = process.env.WINEPREFIX || path.join(os.homedir(), '.wine64')
+    execFileSync(WINE, [RCEDIT, ...rceditArgs], {
+      stdio: 'inherit',
+      env: { ...process.env, WINEPREFIX: winePrefix, WINEDEBUG: '-all' }
+    })
+  }
   console.log('[afterPack] 图标和版本信息注入完成')
 }

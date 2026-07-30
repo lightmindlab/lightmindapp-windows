@@ -3,7 +3,7 @@ name: Build Windows Installer
 # 触发条件：
 # 1. 推送到 main 分支（CI 验证构建是否正常，产物作为 artifact 上传）
 # 2. 推送 v* 开头的 tag（构建并发布到 GitHub Releases）
-# 3. 手动触发（workflow_dispatch），可选是否发布 Release
+# 3. 手动触发（workflow_dispatch）
 on:
   push:
     branches:
@@ -11,11 +11,6 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      publish_release:
-        description: '是否发布为 GitHub Release（需先打 tag；仅打 tag 时此项生效）'
-        required: false
-        default: 'false'
 
 # 避免同分支重复构建抢占资源
 concurrency:
@@ -25,7 +20,8 @@ concurrency:
 jobs:
   build:
     name: Build LightMind (Windows NSIS)
-    runs-on: ubuntu-latest
+    # 使用 Windows runner 原生构建，避免 Linux + wine 的兼容性问题
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
@@ -37,44 +33,25 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Install Wine64
-        # rcedit-x64.exe 是 64 位 Windows 程序，仅需 64 位 wine。
-        # 注意 Ubuntu 24.04 (noble) 的 wine64 包不把 wine64 放入 PATH，
-        # 二进制实际位于 /usr/lib/wine/wine64。但 electron-builder 的
-        # app-builder-bin 依赖 PATH 上的 `wine` 命令，故建立符号链接。
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends wine64 p7zip-full
-          /usr/lib/wine/wine64 --version
-          sudo ln -sf /usr/lib/wine/wine64 /usr/local/bin/wine
-          sudo ln -sf /usr/lib/wine/wine64 /usr/local/bin/wine64
-          wine --version
-
-      - name: Initialize Wine prefix
-        # 预先初始化 wineprefix 并禁用 mono/gecko 下载提示，
-        # 避免首次运行 rcedit 时卡在 GUI 弹窗。
-        run: |
-          WINEPREFIX="$HOME/.wine64" WINEDLLOVERRIDES="mscoree,mshtml=" \
-            wine wineboot --init
-          echo "Wine prefix ready at $HOME/.wine64"
-
-      - name: Provision winCodeSign (rcedit)
+      - name: Provision rcedit
         # package.json 中 signAndEditExecutable=false，electron-builder 不会自动下载
-        # winCodeSign；但自定义 afterPack 钩子需要其中的 rcedit-x64.exe 来注入图标与
-        # 版本信息，故手动下载并解压到 electron-builder 缓存目录。
+        # winCodeSign，但自定义 afterPack 钩子需要 rcedit-x64.exe 来注入图标与版本信息，
+        # 故从 winCodeSign-2.6.0 中提取 rcedit-x64.exe 并通过 RCEDIT_PATH 注入给钩子。
+        shell: pwsh
         run: |
-          CACHE="$HOME/.cache/electron-builder/winCodeSign"
-          mkdir -p "$CACHE"
-          curl -fL -o /tmp/wcs.7z \
-            "https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z"
-          7z x -y -o"$CACHE" /tmp/wcs.7z >/dev/null
-          ls -la "$CACHE/winCodeSign-2.6.0/rcedit-x64.exe"
+          $toolsDir = Join-Path $env:GITHUB_WORKSPACE "tools"
+          New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+          $url = "https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z"
+          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\wcs.7z"
+          & 7z e -y "-o$toolsDir" "$env:TEMP\wcs.7z" rcedit-x64.exe | Out-Null
+          Get-Item (Join-Path $toolsDir "rcedit-x64.exe")
 
       - name: Install dependencies
         run: npm ci
 
       - name: Read version
         id: version
+        shell: bash
         run: |
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -83,14 +60,11 @@ jobs:
       - name: Build Windows NSIS installer
         run: npm run dist:nsis
         env:
-          # GitHub Actions runner 不缓存 electron-builder 的 winCodeSign，
-          # 允许其联网下载 rcedit-x64.exe 等工具
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 复用上一步初始化好的 wineprefix；禁用 mono/gecko 提示
-          WINEPREFIX: /home/runner/.wine64
-          WINEDLLOVERRIDES: mscoree,mshtml=
+          RCEDIT_PATH: ${{ github.workspace }}/tools/rcedit-x64.exe
 
       - name: List build output
+        shell: bash
         run: ls -lh dist/
 
       - name: Upload installer artifact
