@@ -1,0 +1,109 @@
+name: Build Windows Installer
+
+# 触发条件：
+# 1. 推送到 main 分支（CI 验证构建是否正常，产物作为 artifact 上传）
+# 2. 推送 v* 开头的 tag（构建并发布到 GitHub Releases）
+# 3. 手动触发（workflow_dispatch），可选是否发布 Release
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: '是否发布为 GitHub Release（需先打 tag；仅打 tag 时此项生效）'
+        required: false
+        default: 'false'
+
+# 避免同分支重复构建抢占资源
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build LightMind (Windows NSIS)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Wine64
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wine64 wine32
+          wine64 --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "App version: $VERSION"
+
+      - name: Build Windows NSIS installer
+        run: npm run dist:nsis
+        env:
+          # GitHub Actions runner 不缓存 electron-builder 的 winCodeSign，
+          # 允许其联网下载 rcedit-x64.exe 等工具
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List build output
+        run: ls -lh dist/
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LightMind-${{ steps.version.outputs.version }}-win-x64
+          path: |
+            dist/*.exe
+            dist/latest*.yml
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: LightMind-${{ steps.version.outputs.version }}-win-x64
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: LightMind ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.exe
+            dist/latest*.yml

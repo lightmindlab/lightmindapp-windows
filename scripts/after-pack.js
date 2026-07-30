@@ -5,9 +5,33 @@
 const { execFileSync } = require('child_process')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 
-const WINE = '/usr/lib/wine/wine64'
-const RCEDIT = '/root/.cache/electron-builder/winCodeSign/winCodeSign-2.6.0/rcedit-x64.exe'
+// 自动探测 wine 可执行文件路径（兼容本地沙箱 /root 与 GitHub Actions /home/runner）
+function findWine() {
+  const candidates = ['/usr/lib/wine/wine64', '/usr/bin/wine64', '/usr/bin/wine']
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c
+  }
+  return 'wine64'
+}
+
+// 自动探测 electron-builder 缓存中的 rcedit-x64.exe（版本号可能随 electron-builder 升级变化）
+function findRcedit() {
+  const cacheRoot = path.join(os.homedir(), '.cache', 'electron-builder', 'winCodeSign')
+  if (fs.existsSync(cacheRoot)) {
+    const versions = fs.readdirSync(cacheRoot).filter(name => /^winCodeSign-/.test(name))
+    for (const v of versions) {
+      const p = path.join(cacheRoot, v, 'rcedit-x64.exe')
+      if (fs.existsSync(p)) return p
+    }
+  }
+  // 回退到本地沙箱历史路径
+  return '/root/.cache/electron-builder/winCodeSign/winCodeSign-2.6.0/rcedit-x64.exe'
+}
+
+const WINE = findWine()
+const RCEDIT = findRcedit()
 
 module.exports = async function (context) {
   if (context.electronPlatformName !== 'win32') return
@@ -49,10 +73,12 @@ module.exports = async function (context) {
     '--set-icon', toWinePath(icoPath)
   ]
 
+  // WINEPREFIX 默认放在用户家目录下，兼容本地沙箱 /root 与 CI /home/runner
+  const winePrefix = process.env.WINEPREFIX || path.join(os.homedir(), '.wine64')
   console.log('[afterPack] 注入图标和版本信息到', exePath)
   execFileSync(WINE, [RCEDIT, ...args], {
     stdio: 'inherit',
-    env: { ...process.env, WINEPREFIX: '/root/.wine64', WINEDEBUG: '-all' }
+    env: { ...process.env, WINEPREFIX: winePrefix, WINEDEBUG: '-all' }
   })
   console.log('[afterPack] 图标和版本信息注入完成')
 }
